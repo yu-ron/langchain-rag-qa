@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+*.egg
+.pytest_cache/
+backend/chroma_data/
+backend/data/
+backend/uploads/
+backend/test_uploads/
+backend/test_chroma_data/
+
+# 环境变量（包含 API Key，绝对不能提交）
+.env
+backend/.env
+
+# Node / Vue
+node_modules/
+frontend/dist/
+frontend/.vite/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Claude
+.claude/test-passed.txt
+.claude/quality-passed.txt
+.claude/plans/
