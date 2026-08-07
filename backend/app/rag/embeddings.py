@@ -72,6 +72,10 @@ class BailianEmbeddings(Embeddings):
         return response.data[0].embedding
 
 
-def get_embeddings() -> BailianEmbeddings:
-    """获取嵌入模型实例"""
+def get_embeddings() -> Embeddings:
+    """获取嵌入模型实例（支持 Mock 模式用于压测）"""
+    import os
+    if os.getenv("MOCK_LLM", "").lower() == "true":
+        from app.rag.mock import MockEmbeddings
+        return MockEmbeddings()
     return BailianEmbeddings()

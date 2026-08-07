@@ -53,7 +53,11 @@ RAG_PROMPT = ChatPromptTemplate.from_messages([
 
 
 def _get_llm(streaming: bool = False) -> ChatOpenAI:
-    """获取 LLM 实例"""
+    """获取 LLM 实例（支持 Mock 模式用于压测）"""
+    if os.getenv("MOCK_LLM", "").lower() == "true":
+        from app.rag.mock import MockLLM
+        return MockLLM()
+
     os.environ.setdefault("OPENAI_API_KEY", DASHSCOPE_API_KEY)
     os.environ.setdefault("OPENAI_BASE_URL", DASHSCOPE_BASE_URL)
 

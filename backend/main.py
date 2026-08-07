@@ -1,6 +1,7 @@
 """
 FastAPI 主入口文件
-启动命令：python main.py  或  uvicorn main:app --reload --port 8000
+开发模式：python main.py
+生产模式：uvicorn main:app --host 0.0.0.0 --port 8000
 """
 import os
 import sys
@@ -11,27 +12,47 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 
-from app.core.config import DEBUG, SERVER_PORT, UPLOAD_DIR
-from app.core.database import async_engine, Base
+from app.core.config import DEBUG, SERVER_PORT, UPLOAD_DIR, ADMIN_USERNAME, ADMIN_PASSWORD
+from app.core.database import async_engine, Base, sync_engine, SyncSessionLocal
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """
     FastAPI 生命周期管理：
-    - 启动时：自动创建数据库表、上传目录
+    - 启动时：创建目录、建表、初始化管理员账号
     - 关闭时：清理资源
     """
-    # 启动：确保上传目录存在
     os.makedirs(UPLOAD_DIR, exist_ok=True)
     os.makedirs("data", exist_ok=True)
+    os.makedirs("chroma_data", exist_ok=True)
 
-    # 启动：创建数据库表（如果不存在）
+    # 创建数据库表
     async with async_engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
-    # 启动：重建 BM25 关键词检索索引
+    # 初始化管理员账号（如果不存在）
+    from app.models.user import User
+    from app.core.security import hash_password
+    db = SyncSessionLocal()
+    try:
+        existing = db.query(User).filter(User.username == ADMIN_USERNAME).first()
+        if not existing:
+            db.add(User(
+                username=ADMIN_USERNAME,
+                password_hash=hash_password(ADMIN_PASSWORD),
+                role="admin",
+            ))
+            db.commit()
+    except Exception:
+        db.rollback()
+    finally:
+        db.close()
+
+    # 重建 BM25 关键词检索索引
     try:
         from app.rag.vector_store import get_all_documents
         from app.rag.retriever import build_bm25_index
@@ -39,42 +60,31 @@ async def lifespan(app: FastAPI):
         if all_docs:
             build_bm25_index(all_docs)
     except Exception:
-        pass  # 首次启动可能还没有文档，忽略错误
+        pass
 
-    print(f"[OK] Backend running: http://localhost:{SERVER_PORT}")
-    print(f"[OK] API docs: http://localhost:{SERVER_PORT}/docs")
-    print(f"[OK] Upload dir: {UPLOAD_DIR}")
-
-    yield  # 应用运行期间
-
-    # 关闭：清理数据库连接
+    print(f"[OK] Service running on port {SERVER_PORT}")
+    yield
     await async_engine.dispose()
 
 
-# 创建 FastAPI 应用实例
+# ── FastAPI 应用 ──────────────────────────────────────
 app = FastAPI(
     title="LangChain RAG 知识库问答系统",
-    description="基于 LangChain 框架的企业级 RAG 知识库问答系统，支持多用户、多会话、知识库管理",
+    description="基于 LangChain 框架的企业级 RAG 知识库问答系统",
     version="1.0.0",
     lifespan=lifespan,
 )
 
-# ── CORS 跨域配置 ──────────────────────────────────
-# 允许前端（Vue dev server on port 5173）访问后端 API
+# CORS（生产环境添加 Render 域名）
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",  # Vue 开发服务器
-        "http://localhost:5174",
-        "http://127.0.0.1:5173",
-        "http://localhost:3000",  # 备用端口
-    ],
+    allow_origins=["*"],  # 生产环境可以先放开
     allow_credentials=True,
-    allow_methods=["*"],  # 允许所有 HTTP 方法
-    allow_headers=["*"],  # 允许所有请求头
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
-# ── 注册路由 ────────────────────────────────────────
+# ── API 路由 ──────────────────────────────────────────
 from app.api.auth import router as auth_router
 from app.api.knowledge import router as knowledge_router
 from app.api.chat import router as chat_router
@@ -88,28 +98,42 @@ app.include_router(session_router)
 app.include_router(export_router)
 
 
-@app.get("/", summary="根路径", tags=["系统"])
-async def root():
-    """系统欢迎页，同时也用来健康检查"""
-    return {
-        "message": "LangChain RAG 知识库问答系统",
-        "version": "1.0.0",
-        "docs": "/docs",
-    }
-
-
-@app.get("/api/health", summary="健康检查", tags=["系统"])
+@app.get("/api/health", tags=["系统"])
 async def health_check():
-    """健康检查接口，确认服务运行正常"""
     return {"status": "ok"}
 
 
-# ── 直接运行入口 ────────────────────────────────────
+# ── 前端静态文件 ──────────────────────────────────────
+# 生产模式下，FastAPI 直接托管前端页面（开发时用 npm run dev）
+FRONTEND_DIR = os.path.join(os.path.dirname(__file__), "..", "frontend", "dist")
+
+if os.path.exists(FRONTEND_DIR):
+    # 挂载静态资源（JS、CSS、图片等）
+    assets_dir = os.path.join(FRONTEND_DIR, "assets")
+    if os.path.exists(assets_dir):
+        app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
+
+    # SPA 回退：所有非 API 路径都返回 index.html，Vue Router 处理路由
+    @app.get("/{full_path:path}", tags=["前端"])
+    async def serve_frontend(full_path: str):
+        """所有非 API 请求返回 Vue 前端页面"""
+        # 已经是 API 路径的跳过
+        file_path = os.path.join(FRONTEND_DIR, full_path)
+        if os.path.isfile(file_path):
+            return FileResponse(file_path)
+        # SPA 回退
+        index_path = os.path.join(FRONTEND_DIR, "index.html")
+        if os.path.exists(index_path):
+            return FileResponse(index_path)
+        return {"message": "前端文件不存在，请先构建：cd frontend && npm run build"}
+
+
+# ── 直接运行入口 ────────────────────────────────────────
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(
         "main:app",
         host="0.0.0.0",
         port=SERVER_PORT,
-        reload=DEBUG,  # 开发模式自动重载
+        reload=DEBUG,
     )

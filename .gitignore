@@ -17,8 +17,8 @@ backend/.env
 
 # Node / Vue
 node_modules/
-frontend/dist/
 frontend/.vite/
+# dist 需要提交到 git，Render 直接用
 
 # IDE
 .vscode/
