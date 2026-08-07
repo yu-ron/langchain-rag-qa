@@ -30,11 +30,10 @@ async def lifespan(app: FastAPI):
     os.makedirs("data", exist_ok=True)
     os.makedirs("chroma_data", exist_ok=True)
 
-    # 创建数据库表
-    async with async_engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    # 用同步引擎创建数据库表（避免 greenlet 问题）
+    Base.metadata.create_all(bind=sync_engine)
 
-    # 初始化管理员账号（如果不存在）
+    # 初始化管理员账号
     from app.models.user import User
     from app.core.security import hash_password
     db = SyncSessionLocal()
