@@ -118,14 +118,21 @@ async def ask_stream(
     if history is None:
         history = []
 
-    # 1. 混合检索（语义 + 关键词）
-    retrieved_docs = hybrid_search(question)
+    # 0. Query Rewriting 查询重写（多轮对话指代消解）
+    from app.rag.enhance import rewrite_query, rerank_documents
+    rewritten_query = await rewrite_query(question, history)
 
-    # 2. 构建上下文
+    # 1. 混合检索（语义 + 关键词），用改写后的查询
+    retrieved_docs = hybrid_search(rewritten_query)
+
+    # 2. Reranker 精排（LLM 逐条打分，取最相关 Top-5）
+    retrieved_docs = await rerank_documents(rewritten_query, retrieved_docs)
+
+    # 3. 构建上下文
     context = _format_context(retrieved_docs)
     history_text = _format_history(history)
 
-    # 3. 流式调用 LLM
+    # 4. 流式调用 LLM
     llm = _get_llm(streaming=True)
     chain = RAG_PROMPT | llm | StrOutputParser()
 
@@ -138,7 +145,7 @@ async def ask_stream(
         full_answer += chunk
         yield {"type": "content", "data": chunk}
 
-    # 4. 返回引用来源
+    # 5. 返回引用来源
     citations = []
     for i, doc in enumerate(retrieved_docs, start=1):
         citations.append({
